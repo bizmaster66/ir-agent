@@ -11,7 +11,8 @@ SCOPES = ['https://www.googleapis.com/auth/drive']
 def get_drive_service():
     """
     구글 드라이브 서비스 객체 생성.
-    로컬의 json 파일 혹은 Streamlit Cloud의 Secrets 설정을 자동으로 탐색합니다.
+    로컬의 json 파일 혹은 Streamlit Cloud의 Secrets 설정을 자동으로 탐색하며,
+    키 형식 오류를 방지하기 위해 문자열을 자동 정제합니다.
     """
     creds = None
     
@@ -22,11 +23,16 @@ def get_drive_service():
     
     # 2. 클라우드 배포 환경: Streamlit Secrets에 설정이 있는 경우
     elif "gcp_service_account" in st.secrets:
-        # Secrets에 저장된 정보를 딕셔너리로 읽어옴
         creds_info = dict(st.secrets["gcp_service_account"])
-        # TOML에서 줄바꿈 처리가 필요한 private_key의 이스케이프 문자(\n) 처리
+        
         if "private_key" in creds_info:
-            creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
+            # 중요: TOML과 JSON 간의 이스케이프 문자(\n) 충돌을 방지하기 위한 정제 로직
+            key = creds_info["private_key"]
+            # 리터럴 \n 문자를 실제 줄바꿈 문자로 변경
+            key = key.replace("\\n", "\n")
+            # 앞뒤 불필요한 공백 제거
+            creds_info["private_key"] = key.strip()
+            
         creds = service_account.Credentials.from_service_account_info(
             creds_info, scopes=SCOPES)
             
@@ -42,13 +48,15 @@ def get_drive_files(folder_id):
     if not service: return []
     try:
         with st.expander("🔍 연결 상세 정보"):
-            # 현재 사용 중인 계정 이메일 표시
+            # 인증된 계정 이메일 노출 (진단용)
+            email = ""
             if os.path.exists(SERVICE_ACCOUNT_FILE):
-                creds = service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE)
-            else:
-                creds = service_account.Credentials.from_service_account_info(st.secrets["gcp_service_account"])
+                temp_creds = service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE)
+                email = temp_creds.service_account_email
+            elif "gcp_service_account" in st.secrets:
+                email = st.secrets["gcp_service_account"]["client_email"]
             
-            st.write(f"봇 계정: {creds.service_account_email}")
+            st.write(f"봇 계정: {email}")
             folder = service.files().get(fileId=folder_id, fields="name", supportsAllDrives=True).execute()
             st.write(f"연결된 폴더: {folder['name']}")
 

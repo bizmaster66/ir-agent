@@ -7,8 +7,9 @@ from src.utils import convert_pdf_to_images, init_db, save_to_db, get_all_histor
 from src.agent import run_ir_agent
 from src.drive_api import get_drive_files, download_drive_file, create_result_folder, upload_to_drive
 
+# 환경변수 로드
 load_dotenv()
-API_KEY = os.getenv("GEMINI_API_KEY")
+API_KEY = os.getenv("GEMINI_API_KEY") or (st.secrets["GEMINI_API_KEY"] if "GEMINI_API_KEY" in st.secrets else None)
 init_db()
 
 st.set_page_config(page_title="IR Data Agent", page_icon="📈", layout="wide")
@@ -67,7 +68,7 @@ with tab1:
 
 # --- Tab 2: 구글 드라이브 일괄 분석 ---
 with tab2:
-    folder_id = st.text_input("📁 구글 드라이브 폴더 ID 입력", key="drive_id")
+    folder_id = st.text_input("📁 구글 드라이브 폴더 ID 입력", key="drive_id", placeholder="폴더 URL의 마지막 ID 부분을 입력하세요")
     
     if folder_id:
         files = get_drive_files(folder_id)
@@ -77,7 +78,6 @@ with tab2:
             
             if unprocessed_files:
                 if st.button(f"🔥 미분석 {len(unprocessed_files)}건 일괄 분석 시작"):
-                    # 결과 폴더 ID 확인/생성
                     res_folder_id = create_result_folder(folder_id)
                     
                     progress_bar = st.progress(0)
@@ -88,17 +88,17 @@ with tab2:
                         progress_bar.progress(percent)
                         status_text.info(f"🔄 ({idx+1}/{len(unprocessed_files)}) {f['name']} 분석 중...")
                         
-                        # 분석 실행
-                        pdf_bytes = download_drive_file(f['id'])
-                        images = convert_pdf_to_images(pdf_bytes)
-                        p_md, t_md = run_ir_agent(API_KEY, images)
-                        
-                        # 로컬 DB 저장
-                        save_to_db(f['name'], p_md, t_md)
-                        
-                        # 구글 드라이브 업로드 (안정화된 함수 호출)
-                        full_report = f"# {f['name']} 분석 보고서\n\n{t_md}\n\n{p_md}"
-                        upload_to_drive(res_folder_id, f['name'], full_report)
+                        try:
+                            pdf_bytes = download_drive_file(f['id'])
+                            images = convert_pdf_to_images(pdf_bytes)
+                            p_md, t_md = run_ir_agent(API_KEY, images)
+                            
+                            save_to_db(f['name'], p_md, t_md)
+                            
+                            full_report = f"# {f['name']} 분석 보고서\n\n{t_md}\n\n{p_md}"
+                            upload_to_drive(res_folder_id, f['name'], full_report)
+                        except Exception as e:
+                            st.error(f"파일 {f['name']} 처리 중 오류: {e}")
                         
                     status_text.success("🎉 모든 파일의 일괄 분석 및 업로드가 완료되었습니다!")
                     time.sleep(2)
