@@ -25,12 +25,31 @@ with tab1:
     
     if uploaded_file:
         if st.button("🚀 즉시 분석", key="run_manual"):
+            # 타이머 및 상태 표시용 컨테이너
+            status_container = st.empty()
+            start_time = time.time()
+            
             with st.status("분석 진행 중...") as s:
+                # 1단계: 파일 로드
                 pdf_content = uploaded_file.read()
+                elapsed = int(time.time() - start_time)
+                status_container.info(f"⏱️ 경과 시간: {elapsed}초 | PDF 파일을 읽고 있습니다...")
+                
+                # 2단계: 이미지 변환 (최적화된 utils 활용)
                 images = convert_pdf_to_images(pdf_content)
+                elapsed = int(time.time() - start_time)
+                status_container.info(f"⏱️ 경과 시간: {elapsed}초 | 이미지 변환 완료! Gemini AI 분석을 시작합니다...")
+                
+                # 3단계: AI 분석
                 page_md, total_md = run_ir_agent(API_KEY, images)
                 save_to_db(uploaded_file.name, page_md, total_md)
-                st.success(f"'{uploaded_file.name}' 분석 완료!")
+                
+                # 완료 리포트
+                end_time = time.time()
+                final_duration = int(end_time - start_time)
+                status_container.success(f"✅ 분석 완료! (총 소요 시간: {final_duration}초)")
+                st.balloons()
+                time.sleep(2)
                 st.rerun()
 
     st.divider()
@@ -68,7 +87,7 @@ with tab1:
 
 # --- Tab 2: 구글 드라이브 일괄 분석 ---
 with tab2:
-    folder_id = st.text_input("📁 구글 드라이브 폴더 ID 입력", key="drive_id", placeholder="폴더 URL의 마지막 ID 부분을 입력하세요")
+    folder_id = st.text_input("📁 구글 드라이브 폴더 ID 입력", key="drive_id", placeholder="폴더 ID를 입력하세요")
     
     if folder_id:
         files = get_drive_files(folder_id)
@@ -80,27 +99,42 @@ with tab2:
                 if st.button(f"🔥 미분석 {len(unprocessed_files)}건 일괄 분석 시작"):
                     res_folder_id = create_result_folder(folder_id)
                     
+                    overall_start_time = time.time()
                     progress_bar = st.progress(0)
                     status_text = st.empty()
+                    timer_text = st.empty() # 전체 타이머 표시용
                     
                     for idx, f in enumerate(unprocessed_files):
+                        file_start_time = time.time()
                         percent = (idx + 1) / len(unprocessed_files)
                         progress_bar.progress(percent)
-                        status_text.info(f"🔄 ({idx+1}/{len(unprocessed_files)}) {f['name']} 분석 중...")
+                        
+                        status_text.info(f"🔄 ({idx+1}/{len(unprocessed_files)}) '{f['name']}' 분석 중...")
                         
                         try:
+                            # 1단계: 다운로드
                             pdf_bytes = download_drive_file(f['id'])
-                            images = convert_pdf_to_images(pdf_bytes)
-                            p_md, t_md = run_ir_agent(API_KEY, images)
                             
+                            # 2단계: 이미지 변환
+                            images = convert_pdf_to_images(pdf_bytes)
+                            
+                            # 3단계: AI 분석
+                            p_md, t_md = run_ir_agent(API_KEY, images)
                             save_to_db(f['name'], p_md, t_md)
                             
+                            # 4단계: 결과 업로드
                             full_report = f"# {f['name']} 분석 보고서\n\n{t_md}\n\n{p_md}"
                             upload_to_drive(res_folder_id, f['name'], full_report)
+                            
+                            # 개별 파일 시간 및 누적 시간 표시
+                            file_dur = int(time.time() - file_start_time)
+                            total_dur = int(time.time() - overall_start_time)
+                            timer_text.markdown(f"**⏱️ 최근 파일 소요:** {file_dur}초 | **누적 경과 시간:** {total_dur}초")
+                            
                         except Exception as e:
-                            st.error(f"파일 {f['name']} 처리 중 오류: {e}")
+                            st.error(f"파일 {f['name']} 처리 중 오류 발생: {e}")
                         
-                    status_text.success("🎉 모든 파일의 일괄 분석 및 업로드가 완료되었습니다!")
+                    status_text.success(f"🎉 모든 파일 분석 완료! (총 소요 시간: {int(time.time() - overall_start_time)}초)")
                     time.sleep(2)
                     st.rerun()
             else:
