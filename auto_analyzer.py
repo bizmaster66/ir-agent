@@ -78,11 +78,10 @@ def process_files():
             images = convert_pdf_to_images(pdf_bytes)
             
             # Gemini 3 고밀도 분석 엔진 실행 (기존 src.agent 활용)
-            page_md, total_md = run_ir_agent(API_KEY, images)
+            page_md, _ = run_ir_agent(API_KEY, images)
             
             # 최종 마크다운 구성
             full_markdown = f"# IR 분석 리포트: {file_name}\n\n"
-            full_markdown += f"## 🎯 전략 통합 보고서\n\n{total_md}\n\n"
             full_markdown += f"## 📄 페이지별 상세 데이터\n\n{page_md}"
             
             # 구글 드라이브에 업로드

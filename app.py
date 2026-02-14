@@ -16,6 +16,18 @@ st.set_page_config(page_title="IR Data Agent", page_icon="📈", layout="wide")
 
 st.title("📊 고밀도 IR 분석 플랫폼")
 
+with st.sidebar:
+    st.subheader("⚙️ 분석 설정")
+    default_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    model = st.selectbox("Gemini 모델", ["gemini-2.5-flash", "gemini-2.5-pro"], index=0 if default_model == "gemini-2.5-flash" else 1)
+    max_workers = st.number_input("IR_MAX_WORKERS (병렬 처리 수)", min_value=1, max_value=20, value=int(os.getenv("IR_MAX_WORKERS", "8")))
+    image_width = st.slider("IR_IMAGE_WIDTH (이미지 너비)", min_value=1000, max_value=2000, value=int(os.getenv("IR_IMAGE_WIDTH", "1400")), step=50)
+    st.caption("값이 높을수록 품질은 좋아지지만 속도는 느려집니다.")
+
+os.environ["GEMINI_MODEL"] = model
+os.environ["IR_MAX_WORKERS"] = str(max_workers)
+os.environ["IR_IMAGE_WIDTH"] = str(image_width)
+
 tab1, tab2 = st.tabs(["📤 직접 업로드 및 히스토리", "☁️ 구글 드라이브 일괄 분석"])
 
 # --- Tab 1: 직접 업로드 및 검색 가능한 히스토리 ---
@@ -41,8 +53,8 @@ with tab1:
                 status_container.info(f"⏱️ 경과 시간: {elapsed}초 | 이미지 변환 완료! Gemini AI 분석을 시작합니다...")
                 
                 # 3단계: AI 분석
-                page_md, total_md = run_ir_agent(API_KEY, images)
-                save_to_db(uploaded_file.name, page_md, total_md)
+                page_md, _ = run_ir_agent(API_KEY, images)
+                save_to_db(uploaded_file.name, page_md, "")
                 
                 # 완료 리포트
                 end_time = time.time()
@@ -119,11 +131,11 @@ with tab2:
                             images = convert_pdf_to_images(pdf_bytes)
                             
                             # 3단계: AI 분석
-                            p_md, t_md = run_ir_agent(API_KEY, images)
-                            save_to_db(f['name'], p_md, t_md)
+                            p_md, _ = run_ir_agent(API_KEY, images)
+                            save_to_db(f['name'], p_md, "")
                             
                             # 4단계: 결과 업로드
-                            full_report = f"# {f['name']} 분석 보고서\n\n{t_md}\n\n{p_md}"
+                            full_report = f"# {f['name']} 분석 보고서\n\n{p_md}"
                             upload_to_drive(res_folder_id, f['name'], full_report)
                             
                             # 개별 파일 시간 및 누적 시간 표시
@@ -151,5 +163,10 @@ if "current_view" in st.session_state:
         st.rerun()
     
     t1, t2 = st.tabs(["🎯 전략 통합 리포트", "📄 페이지별 데이터"])
-    with t1: st.markdown(v['strategic_summary'])
-    with t2: st.markdown(v['page_detail'])
+    with t1:
+        if v.get('strategic_summary'):
+            st.markdown(v['strategic_summary'])
+        else:
+            st.info("통합 리포트는 현재 비활성화되어 있습니다.")
+    with t2:
+        st.markdown(v['page_detail'])
