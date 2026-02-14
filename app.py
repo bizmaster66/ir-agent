@@ -73,14 +73,15 @@ with tab1:
         filtered_df = history_df[history_df['filename'].str.contains(search_query, case=False)] if search_query else history_df
 
         if not filtered_df.empty:
-            h_col1, h_col2, h_col3, h_col4 = st.columns([3, 2, 1, 1])
+            h_col1, h_col2, h_col3, h_col4, h_col5 = st.columns([3, 2, 1, 1, 1])
             h_col1.write("**파일명**")
             h_col2.write("**분석 일시**")
             h_col3.write("**보기**")
-            h_col4.write("**삭제**")
+            h_col4.write("**다운로드**")
+            h_col5.write("**삭제**")
             
             for _, row in filtered_df.iterrows():
-                c1, c2, c3, c4 = st.columns([3, 2, 1, 1])
+                c1, c2, c3, c4, c5 = st.columns([3, 2, 1, 1, 1])
                 c1.write(row['filename'])
                 c2.write(row['analysis_date'])
                 if c3.button("👁️", key=f"view_{row['id']}"):
@@ -89,7 +90,15 @@ with tab1:
                         "page_detail": row['page_detail'],
                         "strategic_summary": row['strategic_summary']
                     }
-                if c4.button("🗑️", key=f"del_{row['id']}"):
+                report_content = f"# {row['filename']} 분석 보고서\n\n{row['page_detail']}"
+                c4.download_button(
+                    "⬇️",
+                    data=report_content,
+                    file_name=f"{row['filename'].replace('.pdf', '')}_분석보고서.md",
+                    mime="text/markdown",
+                    key=f"download_{row['id']}"
+                )
+                if c5.button("🗑️", key=f"del_{row['id']}"):
                     delete_history(row['id'])
                     st.rerun()
         else:
