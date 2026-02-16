@@ -2,13 +2,10 @@ from google import genai
 from google.genai import types
 import io
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
-from PIL import Image
+from PIL import Image, ImageFilter, ImageStat
 
-# Gemini 2.5 Flash 기본값 (필요 시 환경변수로 변경 가능)
-MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-
-# ✅ PROMPT_PAGE만 편향 방지 버전으로 교체 (코드 구조/로직은 그대로)
 PROMPT_PAGE = """
 당신은 IR 자료를 정밀 분석하여 '평가 에이전트'가 판단을 내릴 수 있도록 원천 데이터를 복원하는 데이터 엔지니어이자 전문 분석가입니다.
 
@@ -27,58 +24,136 @@ PROMPT_PAGE = """
    - 표/그래프에서 직접 읽히는 경우에만 수치를 적으십시오.
    - 비교/증감/추세는 **그래프 축과 데이터 포인트에서 직접 확인되는 범위**에서만 서술하십시오.
    - “~때문에”, “~로 인해”, “~을 입증” 같은 인과 단정 표현 금지
-4. 명시적 추론(제한적 허용): 오직 팩트에 직접 근거하여, 심사역이 이해를 돕기 위한 최소 수준의 해석이 필요할 때만 아래 형식으로 1~2개 이내로 작성하십시오.
-   - 반드시 라벨링 + 3단 구조를 사용하십시오.
-   - 가능성/전망/평가/판단 표현은 금지입니다.
-
-[명시적 추론 형식(강제)]
-[추론]
-- 팩트: (IR에 제시된 사실 요약)
-- 해석: (팩트로부터 가능한 해석. 단, 단정/전망/평가 금지)
-- 한계: (이 해석이 가지는 명확한 한계 또는 부족한 정보)
-
-5. 요약 절대 금지: 평가 에이전트는 당신의 설명문만 보고 기업의 내용을 파악해야 합니다. 설명이 비면 판단이 왜곡됩니다. **불필요한 반복을 줄이고 핵심 정보를 빠짐없이 기술**하십시오. (길이 가이드: 페이지당 약 500~900자, 표/그래프가 복잡하면 더 길어도 됨)
+4. 전달 의도/맥락(약한 추론): 페이지의 텍스트/시각 요소에서 직접 확인 가능한 근거만 사용해, 작성자가 강조하려는 메시지를 2~4문장으로 정리하십시오.
+   - 반드시 관찰된 근거를 먼저 제시하고, 해석은 단정 없이 제한적으로 작성하십시오.
+   - 강한 전망/평가/투자판단 문구는 금지입니다.
 
 [출력 형식]
 ## [Page {page_num}] Raw Data 정밀 분석 보고
 - **데이터 식별 정보:** (페이지 타이틀 및 계층 구조)
 - **객관적 데이터 복원:** (수치, 통계, 텍스트, 표/그래프/도표의 관찰 가능한 내용에 대한 정밀한 서술)
 - **구조적 설명(도표/흐름):** (구성 요소 간 연결 관계와 작동 순서를 '관찰 가능한 형태'로 상세 기술)
-- **명시적 추론(있는 경우에만):** (위 [추론] 형식 준수, 1~2개 이내)
+- **전달 의도/맥락(약한 추론):** (관찰 근거 1~2개 + 해석 2~4문장)
 """
 
-def run_ir_agent(api_key, images):
+
+def _estimate_visual_complexity(img):
+    """Return a lightweight complexity score for routing dense pages to pro."""
+    thumb = img.convert("L")
+    thumb.thumbnail((320, 320))
+    edge = thumb.filter(ImageFilter.FIND_EDGES)
+
+    edge_mean = ImageStat.Stat(edge).mean[0]
+    contrast = ImageStat.Stat(thumb).stddev[0]
+    return (edge_mean * 0.7) + (contrast * 0.3)
+
+
+def _build_page_plan(images, base_model):
+    enable_routing = os.getenv("IR_ENABLE_MODEL_ROUTING", "1") == "1"
+    pro_model = os.getenv("GEMINI_PRO_MODEL", "gemini-2.5-pro")
+    complexity_threshold = float(os.getenv("IR_PRO_COMPLEXITY_THRESHOLD", "36"))
+    pro_ratio = float(os.getenv("IR_PRO_PAGE_RATIO", "0.25"))
+
+    complexities = [_estimate_visual_complexity(img) for img in images]
+    plan = [base_model] * len(images)
+
+    if not enable_routing or not base_model.endswith("flash"):
+        return plan, complexities
+
+    candidates = [
+        (idx, score) for idx, score in enumerate(complexities)
+        if score >= complexity_threshold
+    ]
+    candidates.sort(key=lambda x: x[1], reverse=True)
+
+    max_pro_pages = max(1, int(len(images) * pro_ratio)) if images else 0
+    for idx, _ in candidates[:max_pro_pages]:
+        plan[idx] = pro_model
+
+    return plan, complexities
+
+
+def run_ir_agent(api_key, images, return_metrics=False):
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY is required")
+
+    base_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    image_width = int(os.getenv("IR_IMAGE_WIDTH", "1400"))
+    max_workers = int(os.getenv("IR_MAX_WORKERS", "8"))
+    batch_size = max(1, int(os.getenv("IR_BATCH_SIZE", "6")))
+
     client = genai.Client(api_key=api_key)
-    
+    page_plan, complexities = _build_page_plan(images, base_model)
+
+    started_at = time.perf_counter()
+    results = []
+    preprocess_ms_total = 0.0
+    api_ms_total = 0.0
+
     def analyze_single_page(args):
         i, img = args
-        
-        # [속도 개선 핵심 1] 이미지 물리적 리사이징 (전송 용량 최적화)
-        # 가로 1600px은 Gemini 3가 표를 읽기에 매우 넉넉하면서 용량은 가벼운 크기입니다.
-        base_width = int(os.getenv("IR_IMAGE_WIDTH", "1400"))
-        w_percent = (base_width / float(img.size[0]))
-        h_size = int((float(img.size[1]) * float(w_percent)))
-        img = img.resize((base_width, h_size), Image.Resampling.LANCZOS)
-        
-        img_byte = io.BytesIO()
-        # 품질 80으로 압축하여 업로드 속도와 가독성 균형 유지
-        img.save(img_byte, format='JPEG', quality=80, optimize=True)
-        
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=[
-                PROMPT_PAGE.format(page_num=i+1),
-                types.Part.from_bytes(data=img_byte.getvalue(), mime_type='image/jpeg')
-            ]
-        )
-        return i, response.text
 
-    # [속도 개선 핵심 2] 병렬 처리 (환경에 맞춰 조정 가능)
-    max_workers = int(os.getenv("IR_MAX_WORKERS", "8"))
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        results = list(executor.map(analyze_single_page, enumerate(images)))
-    
-    results.sort(key=lambda x: x[0])
-    page_results = [r[1] for r in results]
+        prep_start = time.perf_counter()
+        w_percent = (image_width / float(img.size[0]))
+        h_size = int((float(img.size[1]) * float(w_percent)))
+        img = img.resize((image_width, h_size), Image.Resampling.LANCZOS)
+
+        img_byte = io.BytesIO()
+        img.save(img_byte, format="JPEG", quality=80, optimize=True)
+        prep_ms = (time.perf_counter() - prep_start) * 1000
+
+        model_for_page = page_plan[i]
+        api_start = time.perf_counter()
+        response = client.models.generate_content(
+            model=model_for_page,
+            contents=[
+                PROMPT_PAGE.format(page_num=i + 1),
+                types.Part.from_bytes(data=img_byte.getvalue(), mime_type="image/jpeg"),
+            ],
+        )
+        api_ms = (time.perf_counter() - api_start) * 1000
+
+        return {
+            "idx": i,
+            "text": response.text,
+            "model": model_for_page,
+            "prep_ms": prep_ms,
+            "api_ms": api_ms,
+        }
+
+    indexed = list(enumerate(images))
+    for start in range(0, len(indexed), batch_size):
+        batch = indexed[start:start + batch_size]
+        batch_workers = min(max_workers, len(batch))
+        with ThreadPoolExecutor(max_workers=batch_workers) as executor:
+            batch_results = list(executor.map(analyze_single_page, batch))
+        results.extend(batch_results)
+
+    results.sort(key=lambda x: x["idx"])
+    for r in results:
+        preprocess_ms_total += r["prep_ms"]
+        api_ms_total += r["api_ms"]
+
+    page_results = [r["text"] for r in results]
     combined_context = "\n\n".join(page_results)
+    total_wall_ms = (time.perf_counter() - started_at) * 1000
+
+    model_counts = {}
+    for r in results:
+        model_counts[r["model"]] = model_counts.get(r["model"], 0) + 1
+
+    metrics = {
+        "pages": len(images),
+        "batch_size": batch_size,
+        "batches": (len(images) + batch_size - 1) // batch_size if batch_size else 0,
+        "max_workers": max_workers,
+        "preprocess_ms_total": round(preprocess_ms_total, 1),
+        "api_ms_total": round(api_ms_total, 1),
+        "wall_ms_total": round(total_wall_ms, 1),
+        "model_counts": model_counts,
+        "complexity_avg": round(sum(complexities) / len(complexities), 2) if complexities else 0,
+    }
+
+    if return_metrics:
+        return combined_context, "", metrics
     return combined_context, ""

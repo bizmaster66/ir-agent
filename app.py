@@ -21,12 +21,18 @@ with st.sidebar:
     default_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     model = st.selectbox("Gemini 모델", ["gemini-2.5-flash", "gemini-2.5-pro"], index=0 if default_model == "gemini-2.5-flash" else 1)
     max_workers = st.number_input("IR_MAX_WORKERS (병렬 처리 수)", min_value=1, max_value=20, value=int(os.getenv("IR_MAX_WORKERS", "8")))
+    batch_size = st.number_input("IR_BATCH_SIZE (배치 페이지 수)", min_value=1, max_value=12, value=int(os.getenv("IR_BATCH_SIZE", "6")))
     image_width = st.slider("IR_IMAGE_WIDTH (이미지 너비)", min_value=1000, max_value=2000, value=int(os.getenv("IR_IMAGE_WIDTH", "1400")), step=50)
+    enable_routing = st.toggle("복잡 페이지 자동 PRO 라우팅", value=os.getenv("IR_ENABLE_MODEL_ROUTING", "1") == "1")
+    pro_ratio = st.slider("IR_PRO_PAGE_RATIO (PRO 비율)", min_value=0.05, max_value=0.50, value=float(os.getenv("IR_PRO_PAGE_RATIO", "0.25")), step=0.05)
     st.caption("값이 높을수록 품질은 좋아지지만 속도는 느려집니다.")
 
 os.environ["GEMINI_MODEL"] = model
 os.environ["IR_MAX_WORKERS"] = str(max_workers)
+os.environ["IR_BATCH_SIZE"] = str(batch_size)
 os.environ["IR_IMAGE_WIDTH"] = str(image_width)
+os.environ["IR_ENABLE_MODEL_ROUTING"] = "1" if enable_routing else "0"
+os.environ["IR_PRO_PAGE_RATIO"] = str(pro_ratio)
 
 tab1, tab2 = st.tabs(["📤 직접 업로드 및 히스토리", "☁️ 구글 드라이브 일괄 분석"])
 
@@ -40,26 +46,36 @@ with tab1:
             # 타이머 및 상태 표시용 컨테이너
             status_container = st.empty()
             start_time = time.time()
+            perf = {}
             
             with st.status("분석 진행 중...") as s:
                 # 1단계: 파일 로드
+                t0 = time.perf_counter()
                 pdf_content = uploaded_file.read()
+                perf["upload_read_ms"] = round((time.perf_counter() - t0) * 1000, 1)
                 elapsed = int(time.time() - start_time)
                 status_container.info(f"⏱️ 경과 시간: {elapsed}초 | PDF 파일을 읽고 있습니다...")
                 
                 # 2단계: 이미지 변환 (최적화된 utils 활용)
+                t0 = time.perf_counter()
                 images = convert_pdf_to_images(pdf_content)
+                perf["pdf_to_image_ms"] = round((time.perf_counter() - t0) * 1000, 1)
                 elapsed = int(time.time() - start_time)
                 status_container.info(f"⏱️ 경과 시간: {elapsed}초 | 이미지 변환 완료! Gemini AI 분석을 시작합니다...")
                 
                 # 3단계: AI 분석
-                page_md, _ = run_ir_agent(API_KEY, images)
+                page_md, _, agent_metrics = run_ir_agent(API_KEY, images, return_metrics=True)
+                perf["agent_wall_ms"] = agent_metrics["wall_ms_total"]
+                t0 = time.perf_counter()
                 save_to_db(uploaded_file.name, page_md, "")
+                perf["db_save_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+                perf["total_ms"] = round((time.time() - start_time) * 1000, 1)
                 
                 # 완료 리포트
                 end_time = time.time()
                 final_duration = int(end_time - start_time)
                 status_container.success(f"✅ 분석 완료! (총 소요 시간: {final_duration}초)")
+                st.session_state.last_manual_metrics = {"pipeline": perf, "agent": agent_metrics}
                 st.balloons()
                 time.sleep(2)
                 st.rerun()
@@ -134,23 +150,34 @@ with tab2:
                         
                         try:
                             # 1단계: 다운로드
+                            t0 = time.perf_counter()
                             pdf_bytes = download_drive_file(f['id'])
+                            dl_ms = round((time.perf_counter() - t0) * 1000, 1)
                             
                             # 2단계: 이미지 변환
+                            t0 = time.perf_counter()
                             images = convert_pdf_to_images(pdf_bytes)
+                            conv_ms = round((time.perf_counter() - t0) * 1000, 1)
                             
                             # 3단계: AI 분석
-                            p_md, _ = run_ir_agent(API_KEY, images)
+                            p_md, _, agent_metrics = run_ir_agent(API_KEY, images, return_metrics=True)
+                            t0 = time.perf_counter()
                             save_to_db(f['name'], p_md, "")
+                            db_ms = round((time.perf_counter() - t0) * 1000, 1)
                             
                             # 4단계: 결과 업로드
                             full_report = f"# {f['name']} 분석 보고서\n\n{p_md}"
+                            t0 = time.perf_counter()
                             upload_to_drive(res_folder_id, f['name'], full_report)
+                            up_ms = round((time.perf_counter() - t0) * 1000, 1)
                             
                             # 개별 파일 시간 및 누적 시간 표시
                             file_dur = int(time.time() - file_start_time)
                             total_dur = int(time.time() - overall_start_time)
-                            timer_text.markdown(f"**⏱️ 최근 파일 소요:** {file_dur}초 | **누적 경과 시간:** {total_dur}초")
+                            timer_text.markdown(
+                                f"**⏱️ 최근 파일:** {file_dur}초 | **누적:** {total_dur}초  \n"
+                                f"`download={dl_ms}ms / convert={conv_ms}ms / agent={agent_metrics['wall_ms_total']}ms / db={db_ms}ms / upload={up_ms}ms`"
+                            )
                             
                         except Exception as e:
                             st.error(f"파일 {f['name']} 처리 중 오류 발생: {e}")
@@ -179,3 +206,8 @@ if "current_view" in st.session_state:
             st.info("통합 리포트는 현재 비활성화되어 있습니다.")
     with t2:
         st.markdown(v['page_detail'])
+
+if "last_manual_metrics" in st.session_state:
+    st.divider()
+    st.subheader("📈 최근 실행 메트릭")
+    st.json(st.session_state.last_manual_metrics)
