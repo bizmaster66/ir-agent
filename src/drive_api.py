@@ -96,7 +96,8 @@ def upload_to_drive(folder_id, filename, content):
     """결과 마크다운 업로드 (안정적인 세션 유지를 위해 내부에서 서비스 생성)"""
     try:
         service = get_drive_service()
-        if not service: return
+        if not service:
+            return False
         
         file_metadata = {
             'name': f"{filename.replace('.pdf', '')}_분석보고서.md",
@@ -113,8 +114,10 @@ def upload_to_drive(folder_id, filename, content):
             fields='id', 
             supportsAllDrives=True
         ).execute()
+        return True
     except Exception as e:
         st.error(f"드라이브 업로드 중 오류 발생: {e}")
+        return False
 
 def download_drive_file(file_id):
     """파일 다운로드"""

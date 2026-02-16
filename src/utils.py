@@ -68,30 +68,48 @@ def init_db():
             filename TEXT,
             analysis_date TEXT,
             page_detail TEXT,
-            strategic_summary TEXT
+            strategic_summary TEXT,
+            source_type TEXT,
+            source_id TEXT
         )
     """)
+    # Backward-compatible migration for existing DBs.
+    cur.execute("PRAGMA table_info(ir_history)")
+    cols = {row[1] for row in cur.fetchall()}
+    if "source_type" not in cols:
+        cur.execute("ALTER TABLE ir_history ADD COLUMN source_type TEXT")
+    if "source_id" not in cols:
+        cur.execute("ALTER TABLE ir_history ADD COLUMN source_id TEXT")
     conn.commit()
     conn.close()
 
-def check_cache(filename):
-    """파일명으로 기존 분석 결과가 있는지 확인"""
+def check_cache(filename=None, source_id=None, source_type=None):
+    """기존 분석 결과 확인: source_id 우선, 없으면 filename fallback"""
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    cur.execute("SELECT page_detail, strategic_summary FROM ir_history WHERE filename = ?", (filename,))
+    if source_id and source_type:
+        cur.execute(
+            "SELECT page_detail, strategic_summary FROM ir_history WHERE source_type = ? AND source_id = ?",
+            (source_type, source_id),
+        )
+    elif filename:
+        cur.execute("SELECT page_detail, strategic_summary FROM ir_history WHERE filename = ?", (filename,))
+    else:
+        conn.close()
+        return None
     result = cur.fetchone()
     conn.close()
     return result
 
-def save_to_db(filename, page_md, total_md):
+def save_to_db(filename, page_md, total_md, source_type=None, source_id=None):
     """분석 완료된 데이터를 DB에 저장"""
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     cur.execute("""
-        INSERT INTO ir_history (filename, analysis_date, page_detail, strategic_summary) 
-        VALUES (?, ?, ?, ?)
-    """, (filename, now, page_md, total_md))
+        INSERT INTO ir_history (filename, analysis_date, page_detail, strategic_summary, source_type, source_id) 
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (filename, now, page_md, total_md, source_type, source_id))
     conn.commit()
     conn.close()
 

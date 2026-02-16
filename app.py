@@ -67,7 +67,7 @@ with tab1:
                 page_md, _, agent_metrics = run_ir_agent(API_KEY, images, return_metrics=True)
                 perf["agent_wall_ms"] = agent_metrics["wall_ms_total"]
                 t0 = time.perf_counter()
-                save_to_db(uploaded_file.name, page_md, "")
+                save_to_db(uploaded_file.name, page_md, "", source_type="upload", source_id=uploaded_file.name)
                 perf["db_save_ms"] = round((time.perf_counter() - t0) * 1000, 1)
                 perf["total_ms"] = round((time.time() - start_time) * 1000, 1)
                 
@@ -129,7 +129,10 @@ with tab2:
     if folder_id:
         files = get_drive_files(folder_id)
         if files:
-            unprocessed_files = [f for f in files if not check_cache(f['name'])]
+            unprocessed_files = [
+                f for f in files
+                if not check_cache(filename=f['name'], source_id=f['id'], source_type="drive")
+            ]
             st.success(f"✅ 연결 성공! (총 {len(files)}개 파일 / 미분석 {len(unprocessed_files)}개)")
             
             if unprocessed_files:
@@ -140,6 +143,9 @@ with tab2:
                     progress_bar = st.progress(0)
                     status_text = st.empty()
                     timer_text = st.empty() # 전체 타이머 표시용
+                    success_count = 0
+                    fail_count = 0
+                    fail_files = []
                     
                     for idx, f in enumerate(unprocessed_files):
                         file_start_time = time.time()
@@ -162,14 +168,19 @@ with tab2:
                             # 3단계: AI 분석
                             p_md, _, agent_metrics = run_ir_agent(API_KEY, images, return_metrics=True)
                             t0 = time.perf_counter()
-                            save_to_db(f['name'], p_md, "")
+                            save_to_db(f['name'], p_md, "", source_type="drive", source_id=f['id'])
                             db_ms = round((time.perf_counter() - t0) * 1000, 1)
                             
                             # 4단계: 결과 업로드
                             full_report = f"# {f['name']} 분석 보고서\n\n{p_md}"
                             t0 = time.perf_counter()
-                            upload_to_drive(res_folder_id, f['name'], full_report)
+                            upload_ok = upload_to_drive(res_folder_id, f['name'], full_report)
                             up_ms = round((time.perf_counter() - t0) * 1000, 1)
+                            if upload_ok:
+                                success_count += 1
+                            else:
+                                fail_count += 1
+                                fail_files.append(f"{f['name']} (upload failed)")
                             
                             # 개별 파일 시간 및 누적 시간 표시
                             file_dur = int(time.time() - file_start_time)
@@ -181,8 +192,17 @@ with tab2:
                             
                         except Exception as e:
                             st.error(f"파일 {f['name']} 처리 중 오류 발생: {e}")
+                            fail_count += 1
+                            fail_files.append(f"{f['name']} ({e})")
                         
-                    status_text.success(f"🎉 모든 파일 분석 완료! (총 소요 시간: {int(time.time() - overall_start_time)}초)")
+                    total_time = int(time.time() - overall_start_time)
+                    if fail_count == 0:
+                        status_text.success(f"🎉 분석 완료: 성공 {success_count}건 / 실패 0건 (총 {total_time}초)")
+                    else:
+                        status_text.warning(
+                            f"⚠️ 분석 종료: 성공 {success_count}건 / 실패 {fail_count}건 (총 {total_time}초)"
+                        )
+                        st.error("실패 파일: " + ", ".join(fail_files))
                     time.sleep(2)
                     st.rerun()
             else:
