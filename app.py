@@ -20,11 +20,11 @@ with st.sidebar:
     st.subheader("⚙️ 분석 설정")
     default_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     model = st.selectbox("Gemini 모델", ["gemini-2.5-flash", "gemini-2.5-pro"], index=0 if default_model == "gemini-2.5-flash" else 1)
-    max_workers = st.number_input("IR_MAX_WORKERS (병렬 처리 수)", min_value=1, max_value=20, value=int(os.getenv("IR_MAX_WORKERS", "8")))
-    batch_size = st.number_input("IR_BATCH_SIZE (배치 페이지 수)", min_value=1, max_value=12, value=int(os.getenv("IR_BATCH_SIZE", "6")))
-    image_width = st.slider("IR_IMAGE_WIDTH (이미지 너비)", min_value=1000, max_value=2000, value=int(os.getenv("IR_IMAGE_WIDTH", "1400")), step=50)
+    max_workers = st.number_input("IR_MAX_WORKERS (병렬 처리 수)", min_value=1, max_value=20, value=int(os.getenv("IR_MAX_WORKERS", "6")))
+    batch_size = st.number_input("IR_BATCH_SIZE (배치 페이지 수)", min_value=1, max_value=12, value=int(os.getenv("IR_BATCH_SIZE", "4")))
+    image_width = st.slider("IR_IMAGE_WIDTH (이미지 너비)", min_value=1000, max_value=2000, value=int(os.getenv("IR_IMAGE_WIDTH", "1150")), step=50)
     enable_routing = st.toggle("복잡 페이지 자동 PRO 라우팅", value=os.getenv("IR_ENABLE_MODEL_ROUTING", "1") == "1")
-    pro_ratio = st.slider("IR_PRO_PAGE_RATIO (PRO 비율)", min_value=0.05, max_value=0.50, value=float(os.getenv("IR_PRO_PAGE_RATIO", "0.25")), step=0.05)
+    pro_ratio = st.slider("IR_PRO_PAGE_RATIO (PRO 비율)", min_value=0.05, max_value=0.50, value=float(os.getenv("IR_PRO_PAGE_RATIO", "0.10")), step=0.05)
     st.caption("값이 높을수록 품질은 좋아지지만 속도는 느려집니다.")
 
 os.environ["GEMINI_MODEL"] = model

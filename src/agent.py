@@ -52,7 +52,7 @@ def _build_page_plan(images, base_model):
     enable_routing = os.getenv("IR_ENABLE_MODEL_ROUTING", "1") == "1"
     pro_model = os.getenv("GEMINI_PRO_MODEL", "gemini-2.5-pro")
     complexity_threshold = float(os.getenv("IR_PRO_COMPLEXITY_THRESHOLD", "36"))
-    pro_ratio = float(os.getenv("IR_PRO_PAGE_RATIO", "0.25"))
+    pro_ratio = float(os.getenv("IR_PRO_PAGE_RATIO", "0.10"))
 
     complexities = [_estimate_visual_complexity(img) for img in images]
     plan = [base_model] * len(images)
@@ -78,9 +78,9 @@ def run_ir_agent(api_key, images, return_metrics=False):
         raise ValueError("GEMINI_API_KEY is required")
 
     base_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-    image_width = int(os.getenv("IR_IMAGE_WIDTH", "1400"))
-    max_workers = int(os.getenv("IR_MAX_WORKERS", "8"))
-    batch_size = max(1, int(os.getenv("IR_BATCH_SIZE", "6")))
+    image_width = int(os.getenv("IR_IMAGE_WIDTH", "1150"))
+    max_workers = int(os.getenv("IR_MAX_WORKERS", "6"))
+    batch_size = max(1, int(os.getenv("IR_BATCH_SIZE", "4")))
 
     client = genai.Client(api_key=api_key)
     page_plan, complexities = _build_page_plan(images, base_model)
